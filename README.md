@@ -60,6 +60,8 @@ BROKEN_APP_URL=http://127.0.0.1:8001
 
 Set `DAYTONA_API_KEY` and `OPENROUTER_API_KEY` with your existing server-side credentials. A `GITHUB_TOKEN` is optional for reading this public repository. Run local staging from the same buggy revision as the configured branch, then restart the orchestrator and trigger an incident. It resolves the branch to a real commit SHA and Daytona checks out that SHA. The dashboard can show the validated diff and sandbox cleanup. Publication still requires [live configuration](#run-with-cloud-services) and incident-specific authorization. [Public demo repository](https://github.com/svngoku/daytona-scalingo-self-healing-app)
 
+A hosted Daytona sandbox completed an OpenRouter repair from local staging and was destroyed after validation. [Daytona dry-run evidence](docs/validation.md#hosted-daytona-with-local-staging)
+
 ## Dashboard design
 
 The dashboard uses [UI SDK React](https://ui-sdk.dev/docs/react) primitives for buttons, tabs, dialogs, selection, and input controls, with React Flow for the incident graph. UI SDK React and Core are pinned to `0.1.0-beta.6`.

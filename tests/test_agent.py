@@ -89,7 +89,7 @@ async def test_repair_inspects_edits_tests_and_finishes(sandbox):
     assert len(requests) == 4
     final = requests[-1]
     assert final["store"] is False and "parallel_tool_calls" not in final
-    assert "exactly one function call" in final["instructions"]
+    assert "Call finish as the only call" in final["instructions"]
     assert SECRET not in str(final["input"])
     outputs = [item for item in final["input"]
                if isinstance(item, dict) and item.get("type") == "function_call_output"]
@@ -213,7 +213,8 @@ def test_annotation_without_default_does_not_redact_next_parameter():
     ast.parse(masked)
 
 
-async def test_repair_rejects_uninspected_edits_and_writes_to_protected_tests(sandbox):
+@pytest.mark.parametrize("attempt", [1, 2])
+async def test_repair_rejects_uninspected_edits_and_writes_to_protected_tests(sandbox, attempt):
     agent, responses = make_agent([
         function_call("uninspected", "write_file", path=APP, content="uninspected"),
         function_call("read", "read_file", path=APP),
@@ -223,7 +224,7 @@ async def test_repair_rejects_uninspected_edits_and_writes_to_protected_tests(sa
     ])
     emit = AsyncMock()
     with pytest.raises(ValueError, match="without a structured repair report"):
-        await agent.repair(sandbox, {"protected_tests": [REGRESSION]}, emit)
+        await agent.repair(sandbox, {"protected_tests": [REGRESSION], "attempt": attempt}, emit)
     sandbox.write_files.assert_not_awaited()
     errors = [event.args[2]["error"] for event in emit.await_args_list if event.args[1] == "error"]
     assert errors == [
@@ -242,23 +243,57 @@ async def test_repair_caps_tool_rounds(sandbox):
     sandbox.write_files.assert_not_awaited()
 
 
-async def test_repair_rejects_batched_calls_before_running_tools(sandbox):
-    batch = function_call("batch-write", "write_file", path=APP, content="# rejected")
+async def test_repair_processes_batches_sequentially_and_defers_finish(sandbox):
+    initial = function_call("read-app", "read_file", path=APP)
+    initial.output.extend(function_call("read-regression", "read_file", path=REGRESSION).output)
+    initial.output.extend(function_call("uninspected", "write_file", path=APP, content="# rejected").output)
+    batch = function_call("batch-write", "write_file", path=APP, content="# accepted")
+    batch.output.extend(function_call("batch-finish", "finish", **REPORT.model_dump()).output)
     batch.output.extend(function_call("batch-test", "run_tests").output)
     agent, responses = make_agent([
+        initial, batch, function_call("done", "finish", **REPORT.model_dump()),
+    ])
+    emit = AsyncMock()
+    assert await agent.repair(sandbox, {}, emit) == REPORT
+    assert [call.args[0] for call in sandbox.read_files.await_args_list] == [[APP], [REGRESSION]]
+    sandbox.write_files.assert_awaited_once_with({APP: "# accepted"})
+    sandbox.run.assert_awaited_once_with("tests")
+    history = responses.create.await_args.kwargs["input"]
+    results = {item["call_id"]: json.loads(item["output"]) for item in history
+               if isinstance(item, dict) and item.get("type") == "function_call_output"}
+    assert results["uninspected"]["error"] == "Inspect source files before editing"
+    assert results["batch-write"] == {"written": APP}
+    assert results["batch-finish"]["error"] == "Send finish alone after receiving the other tool results"
+    assert results["batch-test"]["stdout"] == "3 passed"
+    assert "6 tool calls left" in responses.create.await_args.kwargs["instructions"]
+
+
+async def test_agent_rejects_batch_over_remaining_call_budget_before_any_effect(sandbox):
+    initial = function_call("read-0", "read_file", path=APP)
+    for index in range(1, 11):
+        initial.output.extend(function_call(f"read-{index}", "read_file", path=APP).output)
+    excess = function_call("write", "write_file", path=APP, content="# must not run")
+    excess.output.extend(function_call("tests", "run_tests").output)
+    agent, responses = make_agent([initial, excess])
+    with pytest.raises(ValueError, match="requested 2 tool calls with 1 left"):
+        await agent.repair(sandbox, {}, AsyncMock())
+    assert responses.create.await_count == 2
+    assert sandbox.read_files.await_count == 11
+    sandbox.write_files.assert_not_awaited()
+    sandbox.run.assert_not_awaited()
+
+
+async def test_retry_can_report_verified_preexisting_edits_after_fresh_inspection(sandbox):
+    agent, _ = make_agent([
+        function_call("early", "finish", **REPORT.model_dump()),
         function_call("read", "read_file", path=APP),
-        batch,
-        function_call("write", "write_file", path=APP, content="# accepted"),
         function_call("done", "finish", **REPORT.model_dump()),
     ])
-    assert await agent.repair(sandbox, {}, AsyncMock()) == REPORT
-    sandbox.write_files.assert_awaited_once_with({APP: "# accepted"})
-    sandbox.run.assert_not_awaited()
-    history = responses.create.await_args.kwargs["input"]
-    rejections = [item for item in history if isinstance(item, dict)
-                  and item.get("type") == "function_call_output" and item["call_id"].startswith("batch-")]
-    assert [item["call_id"] for item in rejections] == ["batch-write", "batch-test"]
-    assert all("No tools ran" in json.loads(item["output"])["error"] for item in rejections)
+    emit = AsyncMock()
+    assert await agent.repair(sandbox, {"attempt": 2, "existing_patch": True}, emit) == REPORT
+    sandbox.write_files.assert_not_awaited()
+    emit.assert_any_await("Agent tool rejected: finish", "error",
+                          {"error": "A repair requires file inspection and a code edit"})
 
 
 async def test_invalid_arguments_and_missing_listed_path_can_be_corrected(sandbox):

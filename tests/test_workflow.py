@@ -252,14 +252,19 @@ async def test_next_repair_attempt_can_read_new_files_from_the_previous_attempt(
                 return Result(stdout="\n".join(["apps/broken-app/main.py", *self.files]))
             return await super().run(action)
 
+        async def diff(self):
+            return await super().diff() if new_file in self.files else ""
+
     class RevisingAgent(Agent):
         async def repair(self, sandbox, context, emit):
             listed = set(context["files"].splitlines())
             if context["attempt"] == 1:
                 assert new_file not in listed
+                assert context["existing_patch"] is False
                 await sandbox.write_files({new_file: source})
             else:
                 assert new_file in listed
+                assert context["existing_patch"] is True
                 assert new_file not in context["protected_tests"]
                 assert await sandbox.read_files([new_file]) == {new_file: source}
                 assert "a distinct regression failed" in context["failed_tests"]

@@ -19,9 +19,9 @@ Restart the orchestrator after changing configuration. Keep the key in its serve
 
 ## Model requirements
 
-Choose an OpenRouter model with function tools and structured outputs. The default `openai/gpt-5-mini` completed a real local repair during validation. Catalog capabilities do not guarantee every endpoint supports every optional parameter, so the client requests required-parameter routing and verifies the resulting response before executing tools. It enforces one tool call per response locally rather than relying on the optional `parallel_tool_calls` routing parameter.
+Choose an OpenRouter model with function tools and structured outputs. The default `openai/gpt-5-mini` completed real repairs in Docker and Daytona during validation. Catalog capabilities vary by endpoint. The client requests required-parameter routing and verifies the resulting response before executing tools. It processes independent calls sequentially within the local budget and requires `finish` in its own response. The request omits the optional `parallel_tool_calls` parameter. [Validation results](validation.md)
 
-Diagnosis uses a strict JSON schema. Repair uses a maximum of 12 tool rounds per attempt and up to three repair attempts. The model can inspect scoped Python files, propose edits in the sandbox, and run the supported test commands. A failed provider request never falls back to the fixture.
+Diagnosis uses a strict JSON schema. Repair allows up to 12 tool calls and 12 model rounds per attempt, with up to three attempts. Rejected calls and `finish` count toward the call limit. A retry can report a retained sandbox patch after inspecting it again. The model can inspect scoped Python files, propose edits in the sandbox, and run the supported test commands. The fixture remains a separate provider mode.
 
 Responses use `store=false` and full conversation replay. Tool call IDs and opaque reasoning items are preserved for subsequent requests; opaque reasoning is not displayed in the dashboard. The configured base URL is restricted to OpenRouter's API origin. [Responses API](https://openrouter.ai/docs/api_reference/responses/overview) · [Tool calling](https://openrouter.ai/docs/api_reference/responses/tool-calling) · [Provider routing](https://openrouter.ai/docs/guides/routing/provider-selection)
 

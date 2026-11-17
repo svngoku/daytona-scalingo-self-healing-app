@@ -15,10 +15,15 @@ dependencies, add network access, inspect credentials, or touch unrelated files.
 shell or publication capability. Report concise evidence and explanations, not private reasoning.
 Finish with a structured report; the orchestrator independently validates your claims."""
 REPAIR_INSTRUCTIONS = (
-    INSTRUCTIONS + "\nEmit exactly one function call per response. Wait for its result before your next action."
+    INSTRUCTIONS
+    + "\nYou may group independent calls. Wait for inspection results before proposing an edit. "
+    "Call finish as the only call in a response after receiving the relevant tool results. "
+    "Reserve a call for finish and use it for the report instead of replying with plain text."
 )
 
 MAX_TOOL_OUTPUT = 48_000
+MAX_REPAIR_ROUNDS = 12
+MAX_REPAIR_CALLS = 12
 TOOL_ARGUMENTS = {"read_file": {"path"}, "write_file": {"path", "content"}, "run_tests": set()}
 
 
@@ -103,11 +108,16 @@ class RepairAgent:
         file_listing = context.get("files")
         known_files = set(file_listing.splitlines()) if isinstance(file_listing, str) else None
         inspected: set[str] = set()
-        edited = False
-        for _ in range(12):
+        edited = context.get("existing_patch") is True
+        remaining_calls = MAX_REPAIR_CALLS
+        for _ in range(MAX_REPAIR_ROUNDS):
+            if remaining_calls == 0:
+                raise ValueError(f"Agent exhausted its {MAX_REPAIR_CALLS}-call repair budget")
             response = await self._respond(
                 self.client.responses.create,
-                instructions=REPAIR_INSTRUCTIONS,
+                instructions=(
+                    REPAIR_INSTRUCTIONS + f"\nYou have {remaining_calls} tool calls left, including finish."
+                ),
                 input=messages,
                 tools=tools,
                 include=["reasoning.encrypted_content"],
@@ -118,12 +128,10 @@ class RepairAgent:
             calls = [item for item in response.output if item.type == "function_call"]
             if not calls:
                 raise ValueError("Agent stopped without a structured repair report")
-            if len(calls) > 1:
-                error = "Only one tool call is allowed per response. No tools ran. Send one call next."
-                await emit("Agent tool batch rejected", "error", {"error": error})
-                messages.extend({"type": "function_call_output", "call_id": call.call_id,
-                                 "output": json.dumps({"error": error})} for call in calls)
-                continue
+            if len(calls) > remaining_calls:
+                raise ValueError(f"Agent requested {len(calls)} tool calls with {remaining_calls} left")
+            remaining_calls -= len(calls)
+            has_prior_inspection = bool(inspected)
             for call in calls:
                 try:
                     args = json.loads(call.arguments)
@@ -142,7 +150,7 @@ class RepairAgent:
                         result = await sandbox.read_files([path])
                         inspected.add(path)
                     elif call.name == "write_file":
-                        if not inspected:
+                        if not has_prior_inspection:
                             raise ValueError("Inspect source files before editing")
                         path = args["path"]
                         if path in context.get("protected_tests", []):
@@ -155,6 +163,8 @@ class RepairAgent:
                     elif call.name == "run_tests":
                         result = (await sandbox.run("tests")).to_dict()
                     elif call.name == "finish":
+                        if len(calls) > 1:
+                            raise ValueError("Send finish alone after receiving the other tool results")
                         if not inspected or not edited:
                             raise ValueError("A repair requires file inspection and a code edit")
                         try:
@@ -170,7 +180,7 @@ class RepairAgent:
                     await emit(f"Agent tool rejected: {call.name}", "error", safe_result)
                 messages.append({"type": "function_call_output", "call_id": call.call_id,
                                  "output": json.dumps(safe_result)})
-        raise ValueError("Agent exceeded 12 tool rounds in this repair attempt")
+        raise ValueError(f"Agent exceeded {MAX_REPAIR_ROUNDS} tool rounds in this repair attempt")
 
     async def close(self):
         await self.client.close()

@@ -153,6 +153,7 @@ class Workflow:
                 self.emit(ident, "Original regression fails as expected", tool_status="success",
                           artifacts={"reproduced": True})
                 failures = evidence
+                existing_patch = False
                 while self.store.get(ident).attempt < 3:
                     attempt = self.store.get(ident).attempt + 1
                     self.emit(ident, f"Repair attempt {attempt} of 3", State.GENERATING_FIX, "running", attempt=attempt)
@@ -163,7 +164,8 @@ class Workflow:
                     try:
                         report = await agent.repair(sandbox, {"logs": logs[-24000:], "diagnosis": diagnosis.model_dump(),
                                                    "files": inspection.stdout, "failed_tests": failures[-24000:],
-                                                   "protected_tests": test_paths, "attempt": attempt}, agent_emit)
+                                                   "protected_tests": test_paths, "attempt": attempt,
+                                                   "existing_patch": existing_patch}, agent_emit)
                         if await sandbox.read_files(test_paths) != protected:
                             raise ValueError("Repair modified the original regression tests")
                         self.emit(ident, "Running independent regression and service checks", State.RUNNING_TESTS,
@@ -201,6 +203,7 @@ class Workflow:
                         inspection = await self.command(ident, sandbox, "inspect")
                         if inspection.exit_code:
                             raise RuntimeError("Could not refresh sandbox source files for the next attempt")
+                        existing_patch = bool((await sandbox.diff()).strip())
         except asyncio.CancelledError:
             self.emit(ident, "Execution cancelled", State.CANCELLED, artifacts={"authorization_required": False})
             raise

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Pricing service")
@@ -90,6 +90,10 @@ def health() -> dict[str, str]:
 
 @app.get("/api/quote")
 def quote(quantity: Annotated[int, Query(ge=0, le=1_000_000)]) -> dict[str, int | float]:
+    if quantity < 1:
+        raise HTTPException(
+            status_code=400, detail="quantity must be at least 1"
+        )
     unit_price = 25
     discount_per_item = 10 / quantity
     return {
